@@ -1,4 +1,4 @@
-module discordvoicelog
+module volog
 
 go 1.18
 
