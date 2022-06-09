@@ -99,9 +99,9 @@ func newStatEmbed() *statEmbed {
 		Type:   discordgo.EmbedTypeArticle,
 		Footer: &discordgo.MessageEmbedFooter{},
 		Fields: []*discordgo.MessageEmbedField{
+			&stat.fieldChannel,
 			&stat.fieldName,
 			&stat.fieldUptime,
-			&stat.fieldChannel,
 		},
 	}
 
