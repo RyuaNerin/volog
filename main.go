@@ -488,9 +488,9 @@ func updateStat() {
 		userList,
 		func(i, k int) bool {
 			if userList[i].channelID == userList[k].channelID {
-				return userList[i].channelID < userList[k].channelID
-			} else {
 				return userList[i].connected.Before(userList[k].connected)
+			} else {
+				return userList[i].channelID < userList[k].channelID
 			}
 		},
 	)
