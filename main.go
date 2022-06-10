@@ -51,13 +51,14 @@ var (
 	connectedUserMapLock sync.Mutex
 	connectedUserMap     = make(map[string]*userInfo, 16)
 
-	updateStatSignal = make(chan struct{}, 1)
-
 	// 사전할당
 	allowedMentions = discordgo.MessageAllowedMentions{}
 	emptyEmbeds     = []*discordgo.MessageEmbed{}
 
 	updateUserQueue = make(chan updateData)
+
+	isBotMapLock sync.RWMutex
+	isBotMap     = make(map[string]bool, 16)
 )
 
 type updateData struct {
@@ -115,6 +116,12 @@ func main() {
 	}
 	defer fs.Close()
 
+	err = json.NewDecoder(fs).Decode(&config)
+	if err != nil {
+		panic(err)
+	}
+	fs.Close()
+
 	if config.SentryDsn != "" {
 		err := sentry.Init(sentry.ClientOptions{
 			Dsn: config.SentryDsn,
@@ -123,12 +130,6 @@ func main() {
 			panic(err)
 		}
 	}
-
-	err = json.NewDecoder(fs).Decode(&config)
-	if err != nil {
-		panic(err)
-	}
-	fs.Close()
 
 	ctx, exit := signal.NotifyContext(
 		context.Background(),
@@ -150,6 +151,9 @@ func main() {
 	}
 	defer discordSession.Close()
 
+	discordSession.AddHandler(memberAddEventHandler)
+	discordSession.AddHandler(memberRemoveEventHandler)
+
 	getTodayMessageID()
 
 	go updateUserWorker()
@@ -160,90 +164,54 @@ func main() {
 	<-ctx.Done()
 }
 
-func updateStatNow() {
-	select {
-	case updateStatSignal <- struct{}{}:
-	default:
-	}
-}
-
 func getTodayMessageID() {
 	today := time.Now()
 	today = time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, today.Location())
 
-	idList := make([]*discordgo.Message, 0, 100)
+	msgList, err := discordSession.ChannelMessages(config.TextChannelID, 100, "", "", "")
+	if err != nil {
+		panic(err)
+	}
 
-	beforeID := ""
-	for {
-		st, err := discordSession.ChannelMessages(config.TextChannelID, 100, beforeID, "", "")
-		if err != nil {
-			panic(err)
-		}
-
-		if len(st) == 0 {
-			break
-		}
-
+	if len(msgList) > 0 {
 		sort.Slice(
-			st,
+			msgList,
 			func(i, j int) bool {
-				return st[i].Timestamp.After(st[j].Timestamp)
+				return msgList[i].Timestamp.After(msgList[j].Timestamp)
 			},
 		)
-
-		for _, msg := range st {
-			beforeID = msg.ID
-
-			if msg.Author == nil {
-				continue
-			}
-
-			if msg.Author.ID != discordSession.State.User.ID {
-				continue
-			}
-			if msg.Timestamp.Before(today) {
-				goto ret
-			}
-
-			idList = append(idList, msg)
-		}
-		if len(idList) > 2 {
-			goto ret
-		}
 	}
-
-ret:
-	if len(idList) == 0 {
-		return
-	}
-
-	sort.Slice(
-		idList,
-		func(i, k int) bool {
-			return idList[i].ID > idList[k].ID
-		},
-	)
 
 	var wg sync.WaitGroup
 
 	// 앞쪽 임베딩 사용
 	maxEmbeddingIndex := -1
-	for i, msg := range idList {
+	for i, msg := range msgList {
+		if msg.Author == nil || msg.Author.ID != discordSession.State.User.ID {
+			continue
+		}
 		if len(msg.Embeds) == 0 {
 			break
 		}
+		if msg.Timestamp.Before(today) {
+			break
+		}
+
 		maxEmbeddingIndex = i
 		message.EmbedIDList = append(message.EmbedIDList, msg.ID)
 	}
 	_ = sort.Reverse(sort.StringSlice(message.EmbedIDList))
 
 	// 뒤쪽 임베딩 청소
-	for idx := maxEmbeddingIndex + 1; idx < len(idList); idx++ {
-		if len(idList[idx].Embeds) == 0 {
+	for _, msg := range msgList[maxEmbeddingIndex+1:] {
+		if msg.Author == nil || msg.Author.ID != discordSession.State.User.ID {
+			continue
+		}
+		if len(msg.Embeds) == 0 {
 			continue
 		}
 
-		id := idList[idx].ID
+		id := msg.ID
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -257,20 +225,28 @@ ret:
 
 	wg.Wait()
 
-	for _, msg := range idList {
+	todayFormatted := today.Format("2006년 01월 02일")
+	for _, msg := range msgList {
+		if msg.Author == nil || msg.Author.ID != discordSession.State.User.ID {
+			continue
+		}
 		if len(msg.Embeds) > 0 {
 			continue
 		}
 
+		if !strings.HasPrefix(msg.Content, todayFormatted) {
+			continue
+		}
+
 		message.LogBody.WriteString(msg.Content)
-		message.Date = today.Format("2006-01-02")
+		message.Date = todayFormatted
 		message.LogID = msg.ID
 		return
 	}
 
 	msgSend := discordgo.MessageSend{
 		AllowedMentions: &allowedMentions,
-		Content:         today.Format("2006-01-02"),
+		Content:         todayFormatted,
 	}
 
 	dsm, err := discordSession.ChannelMessageSendComplex(config.TextChannelID, &msgSend)
@@ -281,6 +257,25 @@ ret:
 	message.LogID = dsm.ID
 }
 
+func memberAddEventHandler(sess *discordgo.Session, event *discordgo.GuildMemberAdd) {
+	if !event.User.Bot {
+		return
+	}
+
+	isBotMapLock.Lock()
+	isBotMap[event.User.ID] = event.User.Bot
+	isBotMapLock.Unlock()
+}
+func memberRemoveEventHandler(sess *discordgo.Session, event *discordgo.GuildMemberRemove) {
+	if !event.User.Bot {
+		return
+	}
+
+	isBotMapLock.Lock()
+	delete(isBotMap, event.User.ID)
+	isBotMapLock.Unlock()
+}
+
 func voiceStatusUpdateEvent(sess *discordgo.Session, event *discordgo.VoiceStateUpdate) {
 	if event.GuildID != config.GuildID {
 		return
@@ -288,20 +283,54 @@ func voiceStatusUpdateEvent(sess *discordgo.Session, event *discordgo.VoiceState
 
 	now := time.Now()
 
+	isBotMapLock.RLock()
+	isBot, ok := isBotMap[event.UserID]
+	isBotMapLock.RUnlock()
+
+	if !ok {
+		go func(guildID, userID string) {
+			member, err := discordSession.GuildMember(guildID, userID)
+			if err != nil {
+				sentry.CaptureException(err)
+				return
+			}
+
+			isBotMapLock.Lock()
+			defer isBotMapLock.Unlock()
+
+			isBotMap[userID] = member.User.Bot
+
+			if member.User.Bot {
+				connectedUserMapLock.Lock()
+				defer connectedUserMapLock.Unlock()
+
+				delete(connectedUserMap, userID)
+			}
+
+		}(
+			event.GuildID,
+			event.UserID,
+		)
+	}
+
+	if isBot {
+		return
+	}
+
 	// join
 	switch {
 	case event.ChannelID == "": // leave
 		if event.BeforeUpdate != nil {
-			userLeave(now, event.UserID, event.BeforeUpdate.ChannelID)
+			go userLeave(now, event.UserID, event.BeforeUpdate.ChannelID)
 		} else {
-			userLeave(now, event.UserID, "")
+			go userLeave(now, event.UserID, "")
 		}
 
 	case event.BeforeUpdate == nil: // join
-		userJoin(now, event.UserID, event.ChannelID)
+		go userJoin(now, event.UserID, event.ChannelID)
 
 	case event.BeforeUpdate.ChannelID != event.ChannelID: // move
-		userMove(now, event.UserID, event.ChannelID, event.BeforeUpdate.ChannelID)
+		go userMove(now, event.UserID, event.ChannelID, event.BeforeUpdate.ChannelID)
 
 	default:
 		return
@@ -391,12 +420,12 @@ func updateUserWorker() {
 
 		message.Lock.Lock()
 		{
-			today := ud.now.Format("2006-01-02")
+			todayFormatted := ud.now.Format("2006년 01월 02일")
 
-			if message.Date != today || message.LogBody.Len() > MaxTextLength {
-				message.Date = today
+			if message.Date != todayFormatted || message.LogBody.Len() > MaxTextLength {
+				message.Date = todayFormatted
 				message.LogBody.Reset()
-				message.LogBody.WriteString(ud.now.Format("2006년 01월 02일"))
+				message.LogBody.WriteString(todayFormatted)
 
 				if len(message.EmbedIDList) == 0 {
 					message.LogID = ""
@@ -440,30 +469,18 @@ func updateUserWorker() {
 			}
 		}
 		message.Lock.Unlock()
-
-		updateStatNow()
 	}
 }
 
 func updateStatWorker() {
-	next := time.Now().Truncate(5 * time.Second).Add(5 * time.Second)
+	bef := time.Now().Truncate(5 * time.Second)
 	for {
-		ds := time.Until(next)
-		if ds > 0 {
-			select {
-			case <-time.After(ds):
-			case <-updateStatSignal:
-			}
-		}
-
-		select {
-		case <-updateStatSignal:
-		default:
-		}
+		next := bef.Truncate(5 * time.Second).Add(5 * time.Second)
+		time.Sleep(time.Until(next))
 
 		updateStat()
 
-		next = next.Add(5 * time.Second)
+		bef = next
 	}
 }
 
@@ -575,10 +592,8 @@ func updateStat() {
 		embed.fieldUptime.Value = message.EmbedUptimeBuf.String()
 
 		if message.EmbedIDList[embedIndex] == "" {
-			embedIndex := embedIndex
-
 			w.Add(1)
-			go func() {
+			go func(embedIndex int) {
 				defer w.Done()
 
 				msgSend := discordgo.MessageSend{
@@ -592,12 +607,10 @@ func updateStat() {
 				}
 
 				message.EmbedIDList[embedIndex] = dsm.ID
-			}()
+			}(embedIndex)
 		} else {
-			embedIndex := embedIndex
-
 			w.Add(1)
-			go func() {
+			go func(embedIndex int) {
 				defer w.Done()
 
 				msgSend := discordgo.MessageEdit{
@@ -611,7 +624,7 @@ func updateStat() {
 				if err != nil {
 					log.Println(err.Error())
 				}
-			}()
+			}(embedIndex)
 		}
 	}
 
