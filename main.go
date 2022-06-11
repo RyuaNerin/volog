@@ -32,7 +32,6 @@ var (
 	}
 
 	message struct {
-		Lock sync.Mutex
 		Date string
 
 		LogBody strings.Builder
@@ -48,8 +47,8 @@ var (
 
 	discordSession *discordgo.Session
 
-	connectedUserMapLock sync.Mutex
-	connectedUserMap     = make(map[string]*userInfo, 16)
+	lock             sync.Mutex
+	connectedUserMap = make(map[string]*userInfo, 16)
 
 	// 사전할당
 	allowedMentions = discordgo.MessageAllowedMentions{}
@@ -301,8 +300,8 @@ func voiceStatusUpdateEvent(sess *discordgo.Session, event *discordgo.VoiceState
 			isBotMap[userID] = member.User.Bot
 
 			if member.User.Bot {
-				connectedUserMapLock.Lock()
-				defer connectedUserMapLock.Unlock()
+				lock.Lock()
+				defer lock.Unlock()
 
 				delete(connectedUserMap, userID)
 			}
@@ -331,15 +330,12 @@ func voiceStatusUpdateEvent(sess *discordgo.Session, event *discordgo.VoiceState
 
 	case event.BeforeUpdate.ChannelID != event.ChannelID: // move
 		go userMove(now, event.UserID, event.ChannelID, event.BeforeUpdate.ChannelID)
-
-	default:
-		return
 	}
 }
 
 func userJoin(now time.Time, userID, channelID string) {
-	connectedUserMapLock.Lock()
-	defer connectedUserMapLock.Unlock()
+	lock.Lock()
+	defer lock.Unlock()
 
 	u, ok := connectedUserMap[userID]
 	if !ok {
@@ -362,8 +358,8 @@ func userJoin(now time.Time, userID, channelID string) {
 	}
 }
 func userMove(now time.Time, userID, channelID, channelIDOld string) {
-	connectedUserMapLock.Lock()
-	defer connectedUserMapLock.Unlock()
+	lock.Lock()
+	defer lock.Unlock()
 
 	u, ok := connectedUserMap[userID]
 	if !ok {
@@ -387,8 +383,8 @@ func userMove(now time.Time, userID, channelID, channelIDOld string) {
 	}
 }
 func userLeave(now time.Time, userID, channelID string) {
-	connectedUserMapLock.Lock()
-	defer connectedUserMapLock.Unlock()
+	lock.Lock()
+	defer lock.Unlock()
 
 	delete(connectedUserMap, userID)
 
@@ -418,7 +414,7 @@ func updateUserWorker() {
 	for {
 		ud := <-updateUserQueue
 
-		message.Lock.Lock()
+		lock.Lock()
 		{
 			todayFormatted := ud.now.Format("2006년 01월 02일")
 
@@ -468,7 +464,7 @@ func updateUserWorker() {
 				}
 			}
 		}
-		message.Lock.Unlock()
+		lock.Unlock()
 	}
 }
 
@@ -487,11 +483,8 @@ func updateStatWorker() {
 var updateStatTick = false
 
 func updateStat() {
-	message.Lock.Lock()
-	defer message.Lock.Unlock()
-
-	connectedUserMapLock.Lock()
-	defer connectedUserMapLock.Unlock()
+	lock.Lock()
+	defer lock.Unlock()
 
 	var w sync.WaitGroup
 
