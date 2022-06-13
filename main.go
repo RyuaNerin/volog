@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +32,7 @@ var (
 		GuildID       string `json:"guild_id"`
 		TextChannelID string `json:"text_channel_id"`
 		SentryDsn     string `json:"sentry_dsn"`
+		Pprof         bool   `json:"pprof"`
 	}
 
 	message struct {
@@ -128,6 +132,9 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+	}
+	if config.Pprof {
+		go http.ListenAndServe("127.0.0.1:57618", http.DefaultServeMux)
 	}
 
 	ctx, exit := signal.NotifyContext(
@@ -295,17 +302,14 @@ func voiceStatusUpdateEvent(sess *discordgo.Session, event *discordgo.VoiceState
 			}
 
 			isBotMapLock.Lock()
-			defer isBotMapLock.Unlock()
-
 			isBotMap[userID] = member.User.Bot
+			isBotMapLock.Unlock()
 
 			if member.User.Bot {
 				lock.Lock()
-				defer lock.Unlock()
-
 				delete(connectedUserMap, userID)
+				lock.Unlock()
 			}
-
 		}(
 			event.GuildID,
 			event.UserID,
@@ -335,8 +339,6 @@ func voiceStatusUpdateEvent(sess *discordgo.Session, event *discordgo.VoiceState
 
 func userJoin(now time.Time, userID, channelID string) {
 	lock.Lock()
-	defer lock.Unlock()
-
 	u, ok := connectedUserMap[userID]
 	if !ok {
 		u = &userInfo{
@@ -346,6 +348,7 @@ func userJoin(now time.Time, userID, channelID string) {
 		}
 		connectedUserMap[userID] = u
 	}
+	lock.Unlock()
 
 	updateUserQueue <- updateData{
 		now: now,
@@ -359,8 +362,6 @@ func userJoin(now time.Time, userID, channelID string) {
 }
 func userMove(now time.Time, userID, channelID, channelIDOld string) {
 	lock.Lock()
-	defer lock.Unlock()
-
 	u, ok := connectedUserMap[userID]
 	if !ok {
 		u = &userInfo{
@@ -371,6 +372,7 @@ func userMove(now time.Time, userID, channelID, channelIDOld string) {
 		connectedUserMap[userID] = u
 	}
 	u.channelID = channelID
+	lock.Unlock()
 
 	updateUserQueue <- updateData{
 		now: now,
@@ -384,9 +386,8 @@ func userMove(now time.Time, userID, channelID, channelIDOld string) {
 }
 func userLeave(now time.Time, userID, channelID string) {
 	lock.Lock()
-	defer lock.Unlock()
-
 	delete(connectedUserMap, userID)
+	lock.Unlock()
 
 	var msg string
 	if channelID != "" {
@@ -469,14 +470,19 @@ func updateUserWorker() {
 }
 
 func updateStatWorker() {
-	bef := time.Now().Truncate(5 * time.Second)
+	var locked int32
+	t := time.NewTicker(5 * time.Second)
 	for {
-		next := bef.Truncate(5 * time.Second).Add(5 * time.Second)
-		time.Sleep(time.Until(next))
+		<-t.C
 
-		updateStat()
+		go func() {
+			if atomic.SwapInt32(&locked, 1) == 0 {
+				return
+			}
+			defer atomic.StoreInt32(&locked, 0)
 
-		bef = next
+			updateStat()
+		}()
 	}
 }
 
