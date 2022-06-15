@@ -509,6 +509,8 @@ func updateUserWorker() {
 }
 
 func updateStatWorker() {
+	time.Sleep(time.Until(time.Now().Truncate(5 * time.Second).Add(5 * time.Second)))
+
 	var locked int32
 	t := time.NewTicker(5 * time.Second)
 	for {
