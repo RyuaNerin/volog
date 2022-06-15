@@ -70,9 +70,9 @@ type updateData struct {
 }
 
 type userInfo struct {
-	id        string
-	channelID string
-	connected time.Time
+	UserID    string    `json:"user_id"`
+	ChannelID string    `json:"channel_id"`
+	Connected time.Time `json:"connected"`
 }
 
 type statEmbed struct {
@@ -112,6 +112,36 @@ func newStatEmbed() *statEmbed {
 	return stat
 }
 
+func saveConnectedUserMap() {
+	fs, err := os.Create("stat.json")
+	if err != nil {
+		sentry.CaptureException(err)
+		return
+	}
+	defer fs.Close()
+
+	err = json.NewEncoder(fs).Encode(&connectedUserMap)
+	if err != nil {
+		sentry.CaptureException(err)
+		return
+	}
+}
+
+func loadConnectedUserMap() {
+	fs, err := os.Open("stat.json")
+	if err != nil {
+		sentry.CaptureException(err)
+		return
+	}
+	defer fs.Close()
+
+	err = json.NewDecoder(fs).Decode(&connectedUserMap)
+	if err != nil {
+		sentry.CaptureException(err)
+		return
+	}
+}
+
 func main() {
 	fs, err := os.Open("config.json")
 	if err != nil {
@@ -127,7 +157,8 @@ func main() {
 
 	if config.SentryDsn != "" {
 		err := sentry.Init(sentry.ClientOptions{
-			Dsn: config.SentryDsn,
+			Dsn:        config.SentryDsn,
+			SampleRate: 1,
 		})
 		if err != nil {
 			panic(err)
@@ -136,6 +167,8 @@ func main() {
 	if config.Pprof {
 		go http.ListenAndServe("127.0.0.1:57618", http.DefaultServeMux)
 	}
+
+	loadConnectedUserMap()
 
 	ctx, exit := signal.NotifyContext(
 		context.Background(),
@@ -225,6 +258,7 @@ func getTodayMessageID() {
 			err := discordSession.ChannelMessageDelete(config.TextChannelID, id)
 			if err != nil {
 				sentry.CaptureException(err)
+				return
 			}
 		}()
 	}
@@ -342,12 +376,13 @@ func userJoin(now time.Time, userID, channelID string) {
 	u, ok := connectedUserMap[userID]
 	if !ok {
 		u = &userInfo{
-			id:        userID,
-			channelID: channelID,
-			connected: time.Now(),
+			UserID:    userID,
+			ChannelID: channelID,
+			Connected: time.Now(),
 		}
 		connectedUserMap[userID] = u
 	}
+	saveConnectedUserMap()
 	lock.Unlock()
 
 	updateUserQueue <- updateData{
@@ -365,13 +400,14 @@ func userMove(now time.Time, userID, channelID, channelIDOld string) {
 	u, ok := connectedUserMap[userID]
 	if !ok {
 		u = &userInfo{
-			id:        userID,
-			channelID: channelID,
-			connected: time.Now(),
+			UserID:    userID,
+			ChannelID: channelID,
+			Connected: time.Now(),
 		}
 		connectedUserMap[userID] = u
 	}
-	u.channelID = channelID
+	u.ChannelID = channelID
+	saveConnectedUserMap()
 	lock.Unlock()
 
 	updateUserQueue <- updateData{
@@ -387,6 +423,7 @@ func userMove(now time.Time, userID, channelID, channelIDOld string) {
 func userLeave(now time.Time, userID, channelID string) {
 	lock.Lock()
 	delete(connectedUserMap, userID)
+	saveConnectedUserMap()
 	lock.Unlock()
 
 	var msg string
@@ -449,6 +486,7 @@ func updateUserWorker() {
 				dsm, err := discordSession.ChannelMessageSendComplex(config.TextChannelID, &me)
 				if err != nil {
 					sentry.CaptureException(err)
+					return
 				}
 				message.LogID = dsm.ID
 			} else {
@@ -462,6 +500,7 @@ func updateUserWorker() {
 				_, err := discordSession.ChannelMessageEditComplex(&me)
 				if err != nil {
 					sentry.CaptureException(err)
+					return
 				}
 			}
 		}
@@ -503,10 +542,10 @@ func updateStat() {
 	sort.Slice(
 		userList,
 		func(i, k int) bool {
-			if userList[i].channelID == userList[k].channelID {
-				return userList[i].connected.Before(userList[k].connected)
+			if userList[i].ChannelID == userList[k].ChannelID {
+				return userList[i].Connected.Before(userList[k].Connected)
 			} else {
-				return userList[i].channelID < userList[k].channelID
+				return userList[i].ChannelID < userList[k].ChannelID
 			}
 		},
 	)
@@ -534,6 +573,7 @@ func updateStat() {
 				err := discordSession.ChannelMessageDelete(config.TextChannelID, id)
 				if err != nil {
 					sentry.CaptureException(err)
+					return
 				}
 			}()
 		}
@@ -562,7 +602,7 @@ func updateStat() {
 		for idx := embedIndex * MaxEmbedUser; idx < idxMax && idx < len(userList); idx++ {
 			u := userList[idx]
 
-			ts := now.Sub(u.connected)
+			ts := now.Sub(u.Connected)
 
 			h := (ts / time.Hour)
 			m := (ts % time.Hour) / time.Minute
@@ -575,8 +615,8 @@ func updateStat() {
 			}
 			needLineWrap = true
 
-			fmt.Fprintf(&message.EmbedChannelBuf, "<#%s>", u.channelID)
-			fmt.Fprintf(&message.EmbedNameBuf, "<@%s>", u.id)
+			fmt.Fprintf(&message.EmbedChannelBuf, "<#%s>", u.ChannelID)
+			fmt.Fprintf(&message.EmbedNameBuf, "<@%s>", u.UserID)
 			fmt.Fprintf(&message.EmbedUptimeBuf, "`%02d:%02d:%02d`", h, m, s)
 		}
 
@@ -603,6 +643,7 @@ func updateStat() {
 				dsm, err := discordSession.ChannelMessageSendComplex(config.TextChannelID, &msgSend)
 				if err != nil {
 					sentry.CaptureException(err)
+					return
 				}
 
 				message.EmbedIDList[embedIndex] = dsm.ID
