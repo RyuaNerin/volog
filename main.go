@@ -515,7 +515,7 @@ func updateStatWorker() {
 		<-t.C
 
 		go func() {
-			if atomic.SwapInt32(&locked, 1) == 0 {
+			if atomic.SwapInt32(&locked, 1) != 0 {
 				return
 			}
 			defer atomic.StoreInt32(&locked, 0)
