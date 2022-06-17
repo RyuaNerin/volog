@@ -635,7 +635,13 @@ func updateStat() {
 
 				fmt.Fprintf(&message.EmbedChannelBuf, "<#%s>", u.ChannelID)
 				fmt.Fprintf(&message.EmbedNameBuf, "<@%s>", u.UserID)
-				fmt.Fprintf(&message.EmbedUptimeBuf, "`%02dd %02dh %02ds`", d, h, m)
+				if d > 0 {
+					fmt.Fprintf(&message.EmbedUptimeBuf, "`%2dd %2dh %2dm`", d, h, m)
+				} else if h > 0 {
+					fmt.Fprintf(&message.EmbedUptimeBuf, "`      %2dh %2dm`", h, m)
+				} else {
+					fmt.Fprintf(&message.EmbedUptimeBuf, "`            %2dm`", m)
+				}
 			}
 		}
 
