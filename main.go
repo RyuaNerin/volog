@@ -624,8 +624,7 @@ func updateStat() {
 
 				d := int((ts / time.Hour) / 24)
 				h := int((ts / time.Hour) % 24)
-				m := int((ts % time.Hour) / time.Minute)
-				s := int((ts % time.Minute) / time.Second)
+				m := int(ts % time.Minute)
 
 				if needLineWrap {
 					message.EmbedChannelBuf.WriteString("\n")
@@ -636,7 +635,7 @@ func updateStat() {
 
 				fmt.Fprintf(&message.EmbedChannelBuf, "<#%s>", u.ChannelID)
 				fmt.Fprintf(&message.EmbedNameBuf, "<@%s>", u.UserID)
-				fmt.Fprintf(&message.EmbedUptimeBuf, "`%02d:%02d:%02d:%02d`", d, h, m, s)
+				fmt.Fprintf(&message.EmbedUptimeBuf, "`%02dd %02dh %02ds`", d, h, m)
 			}
 		}
 
