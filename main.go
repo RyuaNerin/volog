@@ -624,7 +624,7 @@ func updateStat() {
 
 				d := int((ts / time.Hour) / 24)
 				h := int((ts / time.Hour) % 24)
-				m := int(ts % time.Minute)
+				m := int((ts / time.Minute) % 60)
 
 				if needLineWrap {
 					message.EmbedChannelBuf.WriteString("\n")
