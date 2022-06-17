@@ -112,7 +112,16 @@ func newStatEmbed() *statEmbed {
 	return stat
 }
 
+var (
+	saveConnectedUserMapLock int32 = 0
+)
+
 func saveConnectedUserMap() {
+	if atomic.SwapInt32(&saveConnectedUserMapLock, 1) == 1 {
+		return
+	}
+	defer atomic.StoreInt32(&saveConnectedUserMapLock, 0)
+
 	fs, err := os.Create("stat.json")
 	if err != nil {
 		sentry.CaptureException(err)
@@ -382,7 +391,7 @@ func userJoin(now time.Time, userID, channelID string) {
 		}
 		connectedUserMap[userID] = u
 	}
-	saveConnectedUserMap()
+	go saveConnectedUserMap()
 	lock.Unlock()
 
 	updateUserQueue <- updateData{
@@ -407,7 +416,7 @@ func userMove(now time.Time, userID, channelID, channelIDOld string) {
 		connectedUserMap[userID] = u
 	}
 	u.ChannelID = channelID
-	saveConnectedUserMap()
+	go saveConnectedUserMap()
 	lock.Unlock()
 
 	updateUserQueue <- updateData{
@@ -423,7 +432,7 @@ func userMove(now time.Time, userID, channelID, channelIDOld string) {
 func userLeave(now time.Time, userID, channelID string) {
 	lock.Lock()
 	delete(connectedUserMap, userID)
-	saveConnectedUserMap()
+	go saveConnectedUserMap()
 	lock.Unlock()
 
 	var msg string
@@ -489,10 +498,14 @@ func updateUserWorker() {
 					return
 				}
 				message.LogID = dsm.ID
+				lock.Unlock()
 			} else {
+				logID := message.LogID
+				lock.Unlock()
+
 				me := discordgo.MessageEdit{
 					Channel:         config.TextChannelID,
-					ID:              message.LogID,
+					ID:              logID,
 					AllowedMentions: &allowedMentions,
 					Content:         &content,
 					Embeds:          emptyEmbeds,
@@ -504,7 +517,6 @@ func updateUserWorker() {
 				}
 			}
 		}
-		lock.Unlock()
 	}
 }
 
@@ -530,13 +542,11 @@ func updateStatWorker() {
 var updateStatTick = false
 
 func updateStat() {
-	lock.Lock()
-	defer lock.Unlock()
+	now := time.Now()
 
 	var w sync.WaitGroup
 
-	now := time.Now()
-
+	lock.Lock()
 	userList := make([]*userInfo, 0, 16)
 	for _, ud := range connectedUserMap {
 		userList = append(userList, ud)
@@ -551,6 +561,7 @@ func updateStat() {
 			}
 		},
 	)
+	lock.Unlock()
 
 	embedCount := int(math.Ceil(float64(len(userList)) / float64(MaxEmbedUser)))
 	if embedCount == 0 {
@@ -599,33 +610,34 @@ func updateStat() {
 		message.EmbedNameBuf.Reset()
 		message.EmbedUptimeBuf.Reset()
 
-		needLineWrap := false
-		idxMax := embedIndex*MaxEmbedUser + MaxEmbedUser
-		for idx := embedIndex * MaxEmbedUser; idx < idxMax && idx < len(userList); idx++ {
-			u := userList[idx]
-
-			ts := now.Sub(u.Connected)
-
-			h := (ts / time.Hour)
-			m := (ts % time.Hour) / time.Minute
-			s := (ts % time.Minute) / time.Second
-
-			if needLineWrap {
-				message.EmbedChannelBuf.WriteString("\n")
-				message.EmbedNameBuf.WriteString("\n")
-				message.EmbedUptimeBuf.WriteString("\n")
-			}
-			needLineWrap = true
-
-			fmt.Fprintf(&message.EmbedChannelBuf, "<#%s>", u.ChannelID)
-			fmt.Fprintf(&message.EmbedNameBuf, "<@%s>", u.UserID)
-			fmt.Fprintf(&message.EmbedUptimeBuf, "`%02d:%02d:%02d`", h, m, s)
-		}
-
 		if len(userList) == 0 {
 			message.EmbedChannelBuf.WriteString("\u200B")
 			message.EmbedNameBuf.WriteString("\u200B")
 			message.EmbedUptimeBuf.WriteString("\u200B")
+		} else {
+			needLineWrap := false
+			idxMax := embedIndex*MaxEmbedUser + MaxEmbedUser
+			for idx := embedIndex * MaxEmbedUser; idx < idxMax && idx < len(userList); idx++ {
+				u := userList[idx]
+
+				ts := now.Sub(u.Connected)
+
+				d := int((ts / time.Hour) / 24)
+				h := int((ts / time.Hour) % 24)
+				m := int((ts % time.Hour) / time.Minute)
+				s := int((ts % time.Minute) / time.Second)
+
+				if needLineWrap {
+					message.EmbedChannelBuf.WriteString("\n")
+					message.EmbedNameBuf.WriteString("\n")
+					message.EmbedUptimeBuf.WriteString("\n")
+				}
+				needLineWrap = true
+
+				fmt.Fprintf(&message.EmbedChannelBuf, "<#%s>", u.ChannelID)
+				fmt.Fprintf(&message.EmbedNameBuf, "<@%s>", u.UserID)
+				fmt.Fprintf(&message.EmbedUptimeBuf, "`%02d:%02d:%02d:%02d`", d, h, m, s)
+			}
 		}
 
 		embed.fieldChannel.Value = message.EmbedChannelBuf.String()
