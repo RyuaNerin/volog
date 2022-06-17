@@ -638,9 +638,9 @@ func updateStat() {
 				if d > 0 {
 					fmt.Fprintf(&message.EmbedUptimeBuf, "`%2dd %2dh %2dm`", d, h, m)
 				} else if h > 0 {
-					fmt.Fprintf(&message.EmbedUptimeBuf, "`      %2dh %2dm`", h, m)
+					fmt.Fprintf(&message.EmbedUptimeBuf, "`    %2dh %2dm`", h, m)
 				} else {
-					fmt.Fprintf(&message.EmbedUptimeBuf, "`            %2dm`", m)
+					fmt.Fprintf(&message.EmbedUptimeBuf, "`        %2dm`", m)
 				}
 			}
 		}
