@@ -54,10 +54,6 @@ var (
 	lock             sync.Mutex
 	connectedUserMap = make(map[string]*userInfo, 16)
 
-	// 사전할당
-	allowedMentions = discordgo.MessageAllowedMentions{}
-	emptyEmbeds     = []*discordgo.MessageEmbed{}
-
 	updateUserQueue = make(chan updateData)
 
 	isBotMapLock sync.RWMutex
@@ -294,7 +290,7 @@ func getTodayMessageID() {
 	}
 
 	msgSend := discordgo.MessageSend{
-		AllowedMentions: &allowedMentions,
+		AllowedMentions: &discordgo.MessageAllowedMentions{},
 		Content:         todayFormatted,
 	}
 
@@ -488,9 +484,9 @@ func updateUserWorker() {
 
 			if message.LogID == "" {
 				me := discordgo.MessageSend{
-					AllowedMentions: &allowedMentions,
+					AllowedMentions: &discordgo.MessageAllowedMentions{},
 					Content:         content,
-					Embeds:          emptyEmbeds,
+					Embeds:          []*discordgo.MessageEmbed{},
 				}
 				dsm, err := discordSession.ChannelMessageSendComplex(config.TextChannelID, &me)
 				if err != nil {
@@ -506,9 +502,9 @@ func updateUserWorker() {
 				me := discordgo.MessageEdit{
 					Channel:         config.TextChannelID,
 					ID:              logID,
-					AllowedMentions: &allowedMentions,
+					AllowedMentions: &discordgo.MessageAllowedMentions{},
 					Content:         &content,
-					Embeds:          emptyEmbeds,
+					Embeds:          []*discordgo.MessageEmbed{},
 				}
 				_, err := discordSession.ChannelMessageEditComplex(&me)
 				if err != nil {
@@ -655,7 +651,7 @@ func updateStat() {
 				defer w.Done()
 
 				msgSend := discordgo.MessageSend{
-					AllowedMentions: &allowedMentions,
+					AllowedMentions: &discordgo.MessageAllowedMentions{},
 					Embed:           &embed.StatEmbed,
 				}
 
@@ -675,7 +671,7 @@ func updateStat() {
 				msgSend := discordgo.MessageEdit{
 					Channel:         config.TextChannelID,
 					ID:              message.EmbedIDList[embedIndex],
-					AllowedMentions: &allowedMentions,
+					AllowedMentions: &discordgo.MessageAllowedMentions{},
 					Embed:           &embed.StatEmbed,
 				}
 
